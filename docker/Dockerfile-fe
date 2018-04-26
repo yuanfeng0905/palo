@@ -17,5 +17,4 @@ EXPOSE 8030 9020 9030 9010
 
 WORKDIR /home/palo/run/fe/
 
-# 使用entrypoint支持启动参数
-ENTRYPOINT ["bin/start_fe.sh"]
+CMD "bin/start_fe.sh"
