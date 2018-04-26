@@ -1,0 +1,7 @@
+81,83c81
+< nohup $LIMIT $JAVA $JAVA_OPTS com.baidu.palo.PaloFe "$@" >$LOG_DIR/fe.out 2>&1 </dev/null &
+< 
+< echo $! > $pidfile
+---
+> nohup $LIMIT $JAVA $JAVA_OPTS com.baidu.palo.PaloFe "$@" >$LOG_DIR/fe.out 2>&1 </dev/null
+\ No newline at end of file

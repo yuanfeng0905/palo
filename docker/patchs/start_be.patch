@@ -1,0 +1,6 @@
+73,74c73
+< nohup $LIMIT ${PALO_HOME}/lib/palo_be "$@" >>$LOG_DIR/be.out 2>&1 </dev/null &
+< echo $! > $pidfile
+---
+> nohup $LIMIT ${PALO_HOME}/lib/palo_be "$@" >>$LOG_DIR/be.out 2>&1 </dev/null
+\ No newline at end of file

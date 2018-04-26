@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 
-
 set -e
 
 TOP_DIR=$(pwd)/../
@@ -60,11 +59,19 @@ if ! [ -f "$JDK_LIB" ]; then
 fi
 tar zxvf $JDK_LIB
 
+# 针对官方启动脚本打补丁，兼容docker
+cd $TOP_DIR/docker
+#diff download/$PALO_RELEASE_VER/fe/bin/start_fe.sh patchs/start_fe.sh >diff_fe
+#diff download/$PALO_RELEASE_VER/be/bin/start_be.sh patchs/start_be.sh >diff_be
+patch download/$PALO_RELEASE_VER/fe/bin/start_fe.sh < patchs/start_fe.patch
+patch download/$PALO_RELEASE_VER/be/bin/start_be.sh < patchs/start_be.patch
+
+
 # 构建docker images
 cd $TOP_DIR/docker
 echo "=== BE image building..."
-docker build -f Dockerfile-be .
+docker build -f Dockerfile-be -t palo/palo-be:0.8.1 .
 echo "=== ok"
 echo "=== FE image building..."
-docker build -f Dockerfile-fe .
+docker build -f Dockerfile-fe -t palo/palo-fe:0.8.1 .
 echo "=== ok"
