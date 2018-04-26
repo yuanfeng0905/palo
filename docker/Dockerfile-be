@@ -1,9 +1,11 @@
 FROM centos:7.2.1511
 
+ARG version
+
 RUN mkdir /home/palo/run/ -p
 
 # copy be
-COPY download/palo-0.8.1/be/ /home/palo/run/be/
+COPY download/palo-$version/be/ /home/palo/run/be/
 
 # set be port: thrift/rpc/http/heartbeat
 EXPOSE 9060 9070 8040 9050

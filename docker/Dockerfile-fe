@@ -1,10 +1,12 @@
 FROM centos:7.2.1511
 
+ARG version
+
 RUN mkdir /home/palo/run/ -p
 
 # copy jdk and palo binary
 COPY download/jdk1.8.0_171/ /home/palo/run/jdk1.8.0_171/
-COPY download/palo-0.8.1/fe/ /home/palo/run/fe/
+COPY download/palo-$version/fe/ /home/palo/run/fe/
 
 # set java home
 ENV JAVA_HOME /home/palo/run/jdk1.8.0_171/

@@ -82,8 +82,8 @@ patch download/$PALO_RELEASE_VER/be/bin/start_be.sh < patchs/start_be.patch
 # 构建docker images
 cd $TOP_DIR/docker
 echo "=== BE image building..."
-docker build -f Dockerfile-be -t palo/palo-be:$ver .
+docker build --build-arg version=$ver -f Dockerfile-be -t palo/palo-be:$ver .
 echo "=== ok"
 echo "=== FE image building..."
-docker build -f Dockerfile-fe -t palo/palo-fe:$ver .
+docker build --build-arg version=$ver -f Dockerfile-fe -t palo/palo-fe:$ver .
 echo "=== ok"
