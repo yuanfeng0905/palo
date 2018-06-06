@@ -249,6 +249,8 @@ public class Catalog {
     // false if default_cluster is not created.
     private boolean isDefaultClusterCreated = false;
 
+    // node name is used for bdbje NodeName.
+    private String nodeName;
     private FrontendNodeType role;
     private FrontendNodeType feType;
     private FrontendNodeType formerFeType;
@@ -272,8 +274,12 @@ public class Catalog {
     private Checkpoint checkpointer;
     private Pair<String, Integer> helperNode = null;
     private Pair<String, Integer> selfNode = null;
-    private List<Frontend> frontends;
-    private List<Frontend> removedFrontends;
+    private Pair<String, Integer> selfHostname = null;
+
+    // node name -> Frontend
+    private Map<String, Frontend> frontends;
+    // removed frontends' name. used for checking if name is duplicated in bdbje
+    private List<String> removedFrontends;
 
     private HAProtocol haProtocol = null;
 
@@ -298,9 +304,9 @@ public class Catalog {
         try {
             if (nodeType == null) {
                 // get all
-                return Lists.newArrayList(frontends);
+                return Lists.newArrayList(frontends.values());
             }
-            for (Frontend frontend : frontends) {
+            for (Frontend frontend : frontends.values()) {
                 if (frontend.getRole() == nodeType) {
                     result.add(frontend);
                 }
@@ -312,8 +318,13 @@ public class Catalog {
         return result;
     }
 
-    public List<Frontend> getRemovedFrontends() {
-        return Lists.newArrayList(removedFrontends);
+    public List<String> getRemovedFrontendNames() {
+        readLock();
+        try {
+            return Lists.newArrayList(removedFrontends);
+        } finally {
+            readUnlock();
+        }
     }
 
     public JournalObservable getJournalObservable() {
@@ -362,8 +373,8 @@ public class Catalog {
         this.feType = FrontendNodeType.INIT;
 
         this.role = FrontendNodeType.UNKNOWN;
-        this.frontends = new ArrayList<Frontend>();
-        this.removedFrontends = new ArrayList<Frontend>();
+        this.frontends = Maps.newHashMap();
+        this.removedFrontends = Lists.newArrayList();
 
         this.journalObservable = new JournalObservable();
         this.formerFeType = FrontendNodeType.INIT;
@@ -407,7 +418,7 @@ public class Catalog {
         return CHECKPOINT;
     }
 
-    private static Catalog getCurrentCatalog() {
+    public static Catalog getCurrentCatalog() {
         if (isCheckpointThread()) {
             return CHECKPOINT;
         } else {
@@ -490,7 +501,7 @@ public class Catalog {
         getClusterIdAndRole();
 
         // 3. Load image first and replay edits
-        this.editLog = new EditLog();
+        this.editLog = new EditLog(nodeName);
         loadImage(IMAGE_DIR); // load image file
         editLog.open(); // open bdb env or local output stream
         this.userPropertyMgr.setEditLog(editLog);
@@ -515,7 +526,7 @@ public class Catalog {
         File versionFile = new File(IMAGE_DIR, Storage.VERSION_FILE);
 
         // helper node is the local node. This usually happens when the very
-        // first node to start
+        // first node to start,
         // or when one node to restart.
         if (isMyself()) {
             if ((roleFile.exists() && !versionFile.exists())
@@ -537,15 +548,34 @@ public class Catalog {
             if (!roleFile.exists()) {
                 // The very first time to start the first node of the cluster.
                 // It should became a Master node (Master node's role is also FOLLOWER, which means electable)
-                storage.writeFrontendRole(FrontendNodeType.FOLLOWER);
+                
+                // For compatibility. Because this is the very first time to start, so we arbitrarily choose
+                // a new name for this node
                 role = FrontendNodeType.FOLLOWER;
+                nodeName = genFeNodeName(selfNode.first, selfNode.second, false /* new style */);
+                storage.writeFrontendRoleAndNodeName(role, nodeName);
+                LOG.info("very first time to start this node. role: {}, node name: {}", role.name(), nodeName);
             } else {
                 role = storage.getRole();
                 if (role == FrontendNodeType.REPLICA) {
                     // for compatibility
                     role = FrontendNodeType.FOLLOWER;
                 }
+
+                nodeName = storage.getNodeName();
+                if (Strings.isNullOrEmpty(nodeName)) {
+                    // In normal case, if ROLE file exist, role and nodeName should both exist.
+                    // But we will get a empty nodeName after upgrading.
+                    // So for forward compatibility, we use the "old-style" way of naming: "ip_port",
+                    // and update the ROLE file.
+                    nodeName = genFeNodeName(selfNode.first, selfNode.second, true/* old style */);
+                    storage.writeFrontendRoleAndNodeName(role, nodeName);
+                    LOG.info("forward compatibility. role: {}, node name: {}", role.name(), nodeName);
+                }
             }
+
+            Preconditions.checkNotNull(role);
+            Preconditions.checkNotNull(nodeName);
 
             if (!versionFile.exists()) {
                 clusterId = Config.cluster_id == -1 ? Storage.newClusterID() : Config.cluster_id;
@@ -555,10 +585,11 @@ public class Catalog {
                 storage.writeClusterIdAndToken();
 
                 isFirstTimeStartUp = true;
-                Frontend self = new Frontend(role, selfNode.first, selfNode.second);
-                // We don't need to check if frontends collection already contains self.
-                // frontends collection must be empty cause no image is loaded and no journal is replayed yet.
-                frontends.add(self);
+                Frontend self = new Frontend(role, nodeName, selfNode.first, selfNode.second);
+                // We don't need to check if frontends already contains self.
+                // frontends must be empty cause no image is loaded and no journal is replayed yet.
+                // And this frontend will be persisted later after opening bdbje environment.
+                frontends.put(nodeName, self);
             } else {
                 clusterId = storage.getClusterID();
                 if (storage.getToken() == null) {
@@ -573,37 +604,37 @@ public class Catalog {
                 isFirstTimeStartUp = false;
             }
         } else {
-            // Designate one helper node. Get the roll and version info
-            // from the helper node
-            Storage storage = null;
-            // try to get role from helper node,
-            // this loop will not end until we get centain role type
+            // try to get role and node name from helper node,
+            // this loop will not end until we get certain role type and name
             while(true) {
-                role = getFeNodeType();
-                if (role == FrontendNodeType.REPLICA) {
-                    // for compatibility
-                    role = FrontendNodeType.FOLLOWER;
-                }
-                storage = new Storage(IMAGE_DIR);
-                if (role == FrontendNodeType.UNKNOWN) {
-                    LOG.error("current node is not added to the group. please add it first.");
+                if (!getFeNodeTypeAndNameFromHelper()) {
+                    LOG.warn("current node is not added to the group. please add it first.");
                     try {
                         Thread.sleep(5000);
+                        continue;
                     } catch (InterruptedException e) {
                         e.printStackTrace();
                         System.exit(-1);
                     }
-                } else {
-                    break;
                 }
+                if (role == FrontendNodeType.REPLICA) {
+                    // for compatibility
+                    role = FrontendNodeType.FOLLOWER;
+                }
+                break;
             }
 
-            if (roleFile.exists() && role != storage.getRole() || !roleFile.exists()) {
-                storage.writeFrontendRole(role);
+            Preconditions.checkNotNull(role);
+            Preconditions.checkNotNull(nodeName);
+
+            Storage storage = new Storage(IMAGE_DIR);
+            if (roleFile.exists() && (role != storage.getRole() || !nodeName.equals(storage.getNodeName())) 
+                    || !roleFile.exists()) {
+                storage.writeFrontendRoleAndNodeName(role, nodeName);
             }
             if (!versionFile.exists()) {
                 // If the version file doesn't exist, download it from helper node
-                if (!getVersionFile()) {
+                if (!getVersionFileFromHelper()) {
                     LOG.error("fail to download version file from " + helperNode.first + " will exit.");
                     System.exit(-1);
                 }
@@ -667,30 +698,57 @@ public class Catalog {
         } else {
             isElectable = false;
         }
+
+        LOG.info("finished to get cluster id: {}, role: {} and node name: {}",
+                 clusterId, role.name(), nodeName);
     }
 
-    // Get the roll info from helper node. UNKNOWN means this node is not added
-    // to the cluster yet.
-    private FrontendNodeType getFeNodeType() {
+    public static String genFeNodeName(String host, int port, boolean isOldStyle) {
+        String name = host + "_" + port;
+        if (isOldStyle) {
+            return name;
+        } else {
+            return name + "_" + System.currentTimeMillis();
+        }
+    }
+
+    // Get the role info and node name from helper node.
+    // return false if failed.
+    private boolean getFeNodeTypeAndNameFromHelper() {
         try {
             URL url = new URL("http://" + helperNode.first + ":" + Config.http_port
                     + "/role?host=" + selfNode.first + "&port=" + selfNode.second);
             HttpURLConnection conn = null;
             conn = (HttpURLConnection) url.openConnection();
             String type = conn.getHeaderField("role");
-            FrontendNodeType ret = FrontendNodeType.valueOf(type);
-            LOG.info("get fe node type {} from {}:{}", ret, helperNode.first, Config.http_port);
+            if (type == null) {
+                LOG.warn("failed to get fe node type from helper node: {}.",helperNode);
+                return false;
+            }
+            role = FrontendNodeType.valueOf(type);
+            if (role == FrontendNodeType.UNKNOWN) {
+                LOG.warn("frontend {} is not added to cluster yet. role UNKNOWN", selfNode);
+                return false;
+            }
 
-            return ret;
+            nodeName = conn.getHeaderField("name");
+            if (Strings.isNullOrEmpty(nodeName)) {
+                // For forward compatibility, we use old-style name: "ip_port"
+                nodeName = genFeNodeName(selfNode.first, selfNode.second, true /* old style */);
+            }
         } catch (Exception e) {
             LOG.warn("failed to get fe node type from helper node: {}.", helperNode, e);
+            return false;
         }
 
-        return FrontendNodeType.UNKNOWN;
+        LOG.info("get fe node type {}, name {} from {}:{}", role, nodeName, helperNode.first, Config.http_port);
+        return true;
     }
 
     private void getSelfHostPort() {
         selfNode = new Pair<String, Integer>(FrontendOptions.getLocalHostAddress(), Config.edit_log_port);
+        selfHostname = new Pair<String, Integer>(FrontendOptions.getHostname(), Config.edit_log_port);
+        LOG.debug("get self node: {}, self hostname: {}", selfNode, selfHostname);
     }
 
     private void getHelperNode(String[] args) throws AnalysisException {
@@ -792,7 +850,10 @@ public class Catalog {
 
         // Log the first frontend
         if (isFirstTimeStartUp) {
-            Frontend self = new Frontend(role, selfNode.first, selfNode.second);
+            // if isFirstTimeStartUp is true, frontends must contains this Node.
+            Frontend self = frontends.get(nodeName);
+            Preconditions.checkNotNull(self);
+            // OP_ADD_FIRST_FRONTEND is emitted, so it can write to BDBJE even if canWrite is false
             editLog.logAddFirstFrontend(self);
         }
 
@@ -803,6 +864,16 @@ public class Catalog {
         System.out.println(msg);
         LOG.info(msg);
 
+        // MUST set master ip before starting checkpoint thread.
+        // because checkpoint thread need this info to select non-master FE to push image
+        this.masterIp = FrontendOptions.getLocalHostAddress();
+        this.masterRpcPort = Config.rpc_port;
+        this.masterHttpPort = Config.http_port;
+
+        MasterInfo info = new MasterInfo(this.masterIp, this.masterHttpPort, this.masterRpcPort);
+        editLog.logMasterInfo(info);
+
+        // start checkpoint thread
         checkpointer = new Checkpoint(editLog);
         checkpointer.setName("leaderCheckpointer");
         checkpointer.setInterval(FeConstants.checkpoint_interval_second * 1000L);
@@ -842,16 +913,6 @@ public class Catalog {
         // catalog recycle bin
         getRecycleBin().start();
 
-        this.masterIp = FrontendOptions.getLocalHostAddress();
-        this.masterRpcPort = Config.rpc_port;
-        this.masterHttpPort = Config.http_port;
-
-        MasterInfo info = new MasterInfo();
-        info.setIp(masterIp);
-        info.setRpcPort(masterRpcPort);
-        info.setHttpPort(masterHttpPort);
-        editLog.logMasterInfo(info);
-
         createTimePrinter();
         timePrinter.setName("timePrinter");
         long tsInterval = (long) ((Config.meta_delay_toleration_second / 2.0) * 1000L);
@@ -887,9 +948,9 @@ public class Catalog {
 
         // add helper sockets
         if (Config.edit_log_type.equalsIgnoreCase("BDB")) {
-            for (Frontend fe : frontends) {
+            for (Frontend fe : frontends.values()) {
                 if (fe.getRole() == FrontendNodeType.FOLLOWER || fe.getRole() == FrontendNodeType.REPLICA) {
-                    ((BDBHA) getHaProtocol()).addHelperSocket(fe.getHost(), fe.getPort());
+                    ((BDBHA) getHaProtocol()).addHelperSocket(fe.getHost(), fe.getEditLogPort());
                 }
             }
         }
@@ -926,7 +987,7 @@ public class Catalog {
         }
     }
 
-    private boolean getVersionFile() throws IOException {
+    private boolean getVersionFileFromHelper() throws IOException {
         try {
             String url = "http://" + helperNode.first + ":" + Config.http_port + "/version";
             File dir = new File(IMAGE_DIR);
@@ -1116,8 +1177,12 @@ public class Catalog {
         size = dis.readInt();
         newChecksum ^= size;
         for (int i = 0; i < size; i++) {
-            Frontend fe = Frontend.read(dis);
-            removedFrontends.add(fe);
+            if (Catalog.getCurrentCatalogJournalVersion() < FeMetaVersion.VERSION_41) {
+                Frontend fe = Frontend.read(dis);
+                removedFrontends.add(fe.getNodeName());
+            } else {
+                removedFrontends.add(Text.readString(dis));
+            }
         }
         return newChecksum;
     }
@@ -1465,7 +1530,7 @@ public class Catalog {
         checksum ^= size;
 
         dos.writeInt(size);
-        for (Frontend fe : frontends) {
+        for (Frontend fe : frontends.values()) {
             fe.write(dos);
         }
 
@@ -1473,8 +1538,8 @@ public class Catalog {
         checksum ^= size;
 
         dos.writeInt(size);
-        for (Frontend fe : removedFrontends) {
-            fe.write(dos);
+        for (String feName : removedFrontends) {
+            Text.writeString(dos, feName);
         }
 
         return checksum;
@@ -1861,6 +1926,7 @@ public class Catalog {
                     switch (feType) {
                     case UNKNOWN: {
                         transferToNonMaster();
+                            break;
                     }
                     default:
                     }
@@ -1936,22 +2002,24 @@ public class Catalog {
         };
     }
 
-    public void addFrontend(FrontendNodeType role, String host, int port) throws DdlException {
+    public void addFrontend(FrontendNodeType role, String host, int editLogPort) throws DdlException {
         writeLock();
         try {
-            Frontend fe = checkFeExist(host, port);
+            Frontend fe = checkFeExist(host, editLogPort);
             if (fe != null) {
                 throw new DdlException("frontend already exists " + fe);
             }
-            fe = checkFeRemoved(host, port);
-            if (fe != null) {
-                throw new DdlException("frontend already removed " + fe + " can not be added again. "
-                        + "try to use a different host or port");
+
+            String nodeName = genFeNodeName(host, editLogPort, false /* new style */);
+
+            if (removedFrontends.contains(nodeName)) {
+                throw new DdlException("frontend name already exists " + nodeName + ". Try again");
             }
-            fe = new Frontend(role, host, port);
-            frontends.add(fe);
+
+            fe = new Frontend(role, nodeName, host, editLogPort);
+            frontends.put(nodeName, fe);
             if (role == FrontendNodeType.FOLLOWER || role == FrontendNodeType.REPLICA) {
-                ((BDBHA) getHaProtocol()).addHelperSocket(host, port);
+                ((BDBHA) getHaProtocol()).addHelperSocket(host, editLogPort);
             }
             editLog.logAddFrontend(fe);
         } finally {
@@ -1972,10 +2040,11 @@ public class Catalog {
             if (fe.getRole() != role) {
                 throw new DdlException(role.toString() + " does not exist[" + host + ":" + port + "]");
             }
-            frontends.remove(fe);
-            removedFrontends.add(fe);
+            frontends.remove(fe.getNodeName());
+            removedFrontends.add(fe.getNodeName());
+
             if (fe.getRole() == FrontendNodeType.FOLLOWER || fe.getRole() == FrontendNodeType.REPLICA) {
-                haProtocol.removeElectableNode(fe.getHost() + "_" + fe.getPort());
+                haProtocol.removeElectableNode(fe.getNodeName());
             }
             editLog.logRemoveFrontend(fe);
         } finally {
@@ -1986,22 +2055,8 @@ public class Catalog {
     public Frontend checkFeExist(String host, int port) {
         readLock();
         try {
-            for (Frontend fe : frontends) {
-                if (fe.getHost().equals(host) && fe.getPort() == port) {
-                    return fe;
-                }
-            }
-        } finally {
-            readUnlock();
-        }
-        return null;
-    }
-
-    public Frontend checkFeRemoved(String host, int port) {
-        readLock();
-        try {
-            for (Frontend fe : removedFrontends) {
-                if (fe.getHost().equals(host) && fe.getPort() == port) {
+            for (Frontend fe : frontends.values()) {
+                if (fe.getHost().equals(host) && fe.getEditLogPort() == port) {
                     return fe;
                 }
             }
@@ -2014,7 +2069,7 @@ public class Catalog {
     public Frontend getFeByHost(String host) {
         readLock();
         try {
-            for (Frontend fe : frontends) {
+            for (Frontend fe : frontends.values()) {
                 if (fe.getHost().equals(host)) {
                     return fe;
                 }
@@ -3023,18 +3078,6 @@ public class Catalog {
             throw new DdlException(e.getMessage());
         }
 
-        // check storage type if has null column
-        boolean hasNullColumn = false;
-        for (Column column : baseSchema) {
-            if (column.isAllowNull()) {
-                hasNullColumn = true;
-                break;
-            }
-        }
-        if (hasNullColumn && baseIndexStorageType != TStorageType.COLUMN) {
-            throw new DdlException("Only column table support null columns");
-        }
-
         Preconditions.checkNotNull(baseIndexStorageType);
         long baseIndexId = olapTable.getId();
         olapTable.setStorageTypeToIndex(baseIndexId, baseIndexStorageType);
@@ -3044,9 +3087,6 @@ public class Catalog {
         double bfFpp = 0;
         try {
             bfColumns = PropertyAnalyzer.analyzeBloomFilterColumns(properties, baseSchema);
-            if (bfColumns != null && baseIndexStorageType == TStorageType.ROW) {
-                throw new DdlException("Only column table support bloom filter index");
-            }
             if (bfColumns != null && bfColumns.isEmpty()) {
                 bfColumns = null;
             }
@@ -3771,7 +3811,7 @@ public class Catalog {
     public void addFrontendWithCheck(Frontend fe) {
         writeLock();
         try {
-            Frontend existFe = checkFeExist(fe.getHost(), fe.getPort());
+            Frontend existFe = checkFeExist(fe.getHost(), fe.getEditLogPort());
             if (existFe != null) {
                 LOG.warn("fe {} already exist.", existFe);
                 if (existFe.getRole() != fe.getRole()) {
@@ -3789,7 +3829,7 @@ public class Catalog {
                 }
                 return;
             }
-            frontends.add(fe);
+            frontends.put(fe.getNodeName(), fe);
             if (fe.getRole() == FrontendNodeType.FOLLOWER || fe.getRole() == FrontendNodeType.REPLICA) {
                 // DO NOT add helper sockets here, cause BDBHA is not instantiated yet.
                 // helper sockets will be added after start BDBHA
@@ -3802,13 +3842,12 @@ public class Catalog {
     public void replayDropFrontend(Frontend frontend) {
         writeLock();
         try {
-            Frontend fe = checkFeExist(frontend.getHost(), frontend.getPort());
-            if (fe == null) {
+            Frontend removedFe = frontends.remove(frontend.getNodeName());
+            if (removedFe == null) {
                 LOG.error(frontend.toString() + " does not exist.");
                 return;
             }
-            frontends.remove(fe);
-            removedFrontends.add(fe);
+            removedFrontends.add(removedFe.getNodeName());
         } finally {
             writeUnlock();
         }
@@ -3872,7 +3911,6 @@ public class Catalog {
             readUnlock();
         }
     }
-
 
     public List<String> getClusterDbNames(String clusterName) throws AnalysisException {
         readLock();
@@ -4076,6 +4114,14 @@ public class Catalog {
 
     public Pair<String, Integer> getSelfNode() {
         return this.selfNode;
+    }
+
+    public Pair<String, Integer> getSelfHostname() {
+        return this.selfHostname;
+    }
+
+    public String getNodeName() {
+        return this.nodeName;
     }
 
     public FrontendNodeType getFeType() {

@@ -15,6 +15,24 @@
 
 package com.baidu.palo.system;
 
+import com.baidu.palo.alter.DecommissionBackendJob.DecommissionType;
+import com.baidu.palo.catalog.Catalog;
+import com.baidu.palo.catalog.DiskInfo;
+import com.baidu.palo.catalog.DiskInfo.DiskState;
+import com.baidu.palo.common.FeMetaVersion;
+import com.baidu.palo.common.io.Text;
+import com.baidu.palo.common.io.Writable;
+import com.baidu.palo.metric.MetricRepo;
+import com.baidu.palo.system.BackendEvent.BackendEventType;
+import com.baidu.palo.thrift.TDisk;
+
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Maps;
+import com.google.common.eventbus.EventBus;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
@@ -25,22 +43,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-
-import com.baidu.palo.alter.DecommissionBackendJob.DecommissionType;
-import com.baidu.palo.catalog.Catalog;
-import com.baidu.palo.catalog.DiskInfo;
-import com.baidu.palo.catalog.DiskInfo.DiskState;
-import com.baidu.palo.common.FeMetaVersion;
-import com.baidu.palo.common.io.Text;
-import com.baidu.palo.common.io.Writable;
-import com.baidu.palo.system.BackendEvent.BackendEventType;
-import com.baidu.palo.thrift.TDisk;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Maps;
-import com.google.common.eventbus.EventBus;
 
 /**
  * This class extends the primary identifier of a Backend with ephemeral state,
@@ -63,6 +65,7 @@ public class Backend implements Writable {
     private AtomicInteger bePort; // be
     private AtomicInteger httpPort; // web service
     private AtomicInteger beRpcPort; // be rpc port
+    private AtomicInteger brpcPort = new AtomicInteger(-1);
 
     private AtomicLong lastUpdateMs;
     private AtomicLong lastStartTime;
@@ -139,7 +142,16 @@ public class Backend implements Writable {
         return beRpcPort.get();
     }
 
+    public int getBrpcPort() {
+        return brpcPort.get();
+    }
+
+    // back compatible with unit test
     public void updateOnce(int bePort, int httpPort, int beRpcPort) {
+        updateOnce(bePort, httpPort, beRpcPort, -1);
+    }
+
+    public void updateOnce(int bePort, int httpPort, int beRpcPort, int brpcPort) {
         boolean isChanged = false;
         if (this.bePort.get() != bePort) {
             isChanged = true;
@@ -154,6 +166,11 @@ public class Backend implements Writable {
         if (this.beRpcPort.get() != beRpcPort) {
             isChanged = true;
             this.beRpcPort.set(beRpcPort);
+        }
+
+        if (this.brpcPort.get() != brpcPort) {
+            isChanged = true;
+            this.brpcPort.set(brpcPort);
         }
 
         long currentTime = System.currentTimeMillis();
@@ -205,6 +222,10 @@ public class Backend implements Writable {
 
     public void setBeRpcPort(int beRpcPort) {
         this.beRpcPort.set(beRpcPort);
+    }
+
+    public void setBrpcPort(int brpcPort) {
+        this.brpcPort.set(brpcPort);
     }
 
     public long getLastUpdateMs() {
@@ -359,6 +380,9 @@ public class Backend implements Writable {
 
         // log disk changing
         Catalog.getInstance().getEditLog().logBackendStateChange(this);
+
+        // disks is changed, regenerated capacity metrics
+        MetricRepo.generateCapacityMetrics();
     }
 
     public static Backend read(DataInput in) throws IOException {
@@ -392,6 +416,7 @@ public class Backend implements Writable {
         out.writeInt(backendState.get());
         out.writeInt(decommissionType.get());
 
+        out.writeInt(brpcPort.get());
     }
 
     @Override
@@ -433,6 +458,10 @@ public class Backend implements Writable {
             ownerClusterName.set(SystemInfoService.DEFAULT_CLUSTER);
             backendState.set(BackendState.using.ordinal());
             decommissionType.set(DecommissionType.SystemDecommission.ordinal());
+        }
+
+        if (Catalog.getCurrentCatalogJournalVersion() >= FeMetaVersion.VERSION_40) {
+            brpcPort.set(in.readInt());
         }
     }
 

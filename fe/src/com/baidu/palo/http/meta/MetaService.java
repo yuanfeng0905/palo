@@ -251,6 +251,7 @@ public class MetaService {
                     response.updateHeader("role", FrontendNodeType.UNKNOWN.name());
                 } else {
                     response.updateHeader("role", fe.getRole().name());
+                    response.updateHeader("name", fe.getNodeName());
                 }
                 writeResponse(request, response);
             } else {
@@ -266,7 +267,7 @@ public class MetaService {
      * the fe with the given ip and port. When one frontend start, it should check
      * the local electable_nodes config and local cluster id with other frontends.
      * If there is any difference, local fe will exit. This is designed to protect
-     * the consistance of the cluster.
+     * the consistency of the cluster.
      */
     public static class CheckAction extends MetaBaseAction {
         private static final Logger LOG = LogManager.getLogger(CheckAction.class);
@@ -275,7 +276,7 @@ public class MetaService {
             super(controller, imageDir);
         }
 
-        public static void registerAction (ActionController controller, File imageDir)
+        public static void registerAction(ActionController controller, File imageDir)
                 throws IllegalArgException {
             controller.registerHandler(HttpMethod.GET, "/check",
                     new CheckAction(controller, imageDir));

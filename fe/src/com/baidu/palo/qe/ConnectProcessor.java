@@ -89,30 +89,30 @@ public class ConnectProcessor {
         ctx.getState().setOk();
     }
 
-    private void auditAfterExec() {
-        MetricRepo.COUNTER_REQUEST_ALL.inc();
-
+    private void auditAfterExec(String origStmt) {
         // slow query
         long elapseMs = System.currentTimeMillis() - ctx.getStartTime();
         // query state log
         ctx.getAuditBuilder().put("state", ctx.getState());
         ctx.getAuditBuilder().put("time", elapseMs);
         ctx.getAuditBuilder().put("returnRows", ctx.getReturnRows());
-        String auditString = ctx.getAuditBuilder().toString();
 
-        if (auditString.toLowerCase().contains("select") && auditString.toLowerCase().contains("from")) {
-            MetricRepo.COUNTER_QUERY_ALL.inc();
+        if (ctx.getState().isQuery()) {
+            MetricRepo.COUNTER_QUERY_ALL.increase(1L);
             if (ctx.getState().getStateType() == QueryState.MysqlStateType.ERR
                     && ctx.getState().getErrType() != QueryState.ErrType.ANALYSIS_ERR) {
                 // err query
-                MetricRepo.COUNTER_QUERY_ERR.inc();
-                ctx.getAuditBuilder().put("monitor", "yes");
+                MetricRepo.COUNTER_QUERY_ERR.increase(1L);
             } else {
                 // ok query
-                MetricRepo.METER_QUERY.mark();
                 MetricRepo.HISTO_QUERY_LATENCY.update(elapseMs);
             }
+            ctx.getAuditBuilder().put("is_query", 1);
+        } else {
+            ctx.getAuditBuilder().put("is_query", 0);
         }
+        // We put origin query stmt at the end of audit log, for parsing the log more convenient.
+        ctx.getAuditBuilder().put("stmt", origStmt);
 
         AuditLog.getQueryAudit().log(ctx.getAuditBuilder().toString());
 
@@ -125,7 +125,7 @@ public class ConnectProcessor {
     // process COM_QUERY statement,
     // 只有在与请求客户端交互出现问题时候才抛出异常
     private void handleQuery() {
-        MetricRepo.METER_REQUEST.mark();
+        MetricRepo.COUNTER_REQUEST_ALL.increase(1L);
         // convert statement to Java string
         String stmt = null;
         try {
@@ -146,14 +146,13 @@ public class ConnectProcessor {
         ctx.getAuditBuilder().put("client", ctx.getMysqlChannel().getRemoteHostString());
         ctx.getAuditBuilder().put("user", ctx.getUser());
         ctx.getAuditBuilder().put("db", ctx.getDatabase());
-        ctx.getAuditBuilder().put("query", stmt.replace("\n", "\\n"));
 
         // execute this query.
         try {
             executor = new StmtExecutor(ctx, stmt);
             executor.execute();
-            // needForward = executor.isForwardtoMaster();
-            // outputPacket = executor.getOutputPacket();
+            // set if this is a QueryStmt
+            ctx.getState().setQuery(executor.isQueryStmt());
         } catch (DdlException e) {
             LOG.warn("Process one query failed because DdlException: ", e);
             ctx.getState().setError(e.getMessage());
@@ -165,11 +164,11 @@ public class ConnectProcessor {
             // Catch all throwable.
             // If reach here, maybe palo bug.
             LOG.warn("Process one query failed because unknown reason: ", e);
-            ctx.getState().setError("Maybe palo bug");
+            ctx.getState().setError("Unexpected exception: " + e.getMessage());
         }
 
         // audit after exec
-        auditAfterExec();
+        auditAfterExec(stmt.replace("\n", "\\n"));
     }
 
     // Get the column definitions of a table
@@ -332,7 +331,7 @@ public class ConnectProcessor {
             // Catch all throwable.
             // If reach here, maybe palo bug.
             LOG.warn("Process one query failed because unknown reason: ", e);
-            ctx.getState().setError("Maybe palo bug");
+            ctx.getState().setError("Unexpected exception: " + e.getMessage());
         }
         // no matter the master execute success or fail, the master must transfer the result to follower
         // and tell the follwer the current jounalID.
@@ -388,3 +387,4 @@ public class ConnectProcessor {
         }
     }
 }
+

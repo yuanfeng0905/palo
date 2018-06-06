@@ -24,6 +24,8 @@ import com.baidu.palo.alter.DecommissionBackendJob.DecommissionType;
 import com.baidu.palo.catalog.Catalog;
 import com.baidu.palo.cluster.Cluster;
 import com.baidu.palo.common.AnalysisException;
+import com.baidu.palo.common.Pair;
+import com.baidu.palo.common.util.DebugUtil;
 import com.baidu.palo.common.util.ListComparator;
 import com.baidu.palo.common.util.TimeUtils;
 import com.baidu.palo.system.Backend;
@@ -44,8 +46,9 @@ import java.util.List;
 public class BackendsProcDir implements ProcDirInterface {
     public static final ImmutableList<String> TITLE_NAMES = new ImmutableList.Builder<String>()
             .add("BackendId").add("Cluster").add("IP").add("HostName").add("HeartbeatPort")
-            .add("BePort").add("HttpPort").add("LastStartTime").add("LastHeartbeat").add("Alive")
-            .add("SystemDecommissioned").add("ClusterDecommissioned").add("TabletNum").add("FreeSpace")
+            .add("BePort").add("HttpPort").add("brpcPort").add("LastStartTime").add("LastHeartbeat").add("Alive")
+            .add("SystemDecommissioned").add("ClusterDecommissioned").add("TabletNum")
+            .add("DataUsedCapacity").add("TotalCapacity").add("FreeSpace")
             .build();
 
     public static final int IP_INDEX = 2;
@@ -131,6 +134,7 @@ public class BackendsProcDir implements ProcDirInterface {
                 backendInfo.add(String.valueOf(backend.getHeartbeatPort()));
                 backendInfo.add(String.valueOf(backend.getBePort()));
                 backendInfo.add(String.valueOf(backend.getHttpPort()));
+                backendInfo.add(String.valueOf(backend.getBrpcPort()));
             }
             backendInfo.add(TimeUtils.longToTimeString(backend.getLastStartTime()));
             backendInfo.add(TimeUtils.longToTimeString(backend.getLastUpdateMs()));
@@ -148,6 +152,13 @@ public class BackendsProcDir implements ProcDirInterface {
             }
             backendInfo.add(tabletNum.toString());
 
+            // capacity
+            Pair<Double, String> usedCapacity = DebugUtil.getByteUint(backend.getDataUsedCapacityB());
+            backendInfo.add(DebugUtil.DECIMAL_FORMAT_SCALE_3.format(usedCapacity.first) + " " + usedCapacity.second);
+            Pair<Double, String> totalCapacity = DebugUtil.getByteUint(backend.getTotalCapacityB());
+            backendInfo.add(DebugUtil.DECIMAL_FORMAT_SCALE_3.format(totalCapacity.first) + " " + totalCapacity.second);
+
+            // free space
             double free = 0.0;
             if (backend.getTotalCapacityB() <= 0) {
                 free = 0.0;
