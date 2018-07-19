@@ -1,4 +1,12 @@
-81,83c81
+2d1
+< 
+28c27
+< export JAVA_OPTS="-Xmx1024m"
+---
+> #export JAVA_OPTS="-Xmx1024m"
+47d45
+<   echo "You could set JAVA_HOME in conf/fe.conf"
+83,85c81
 < nohup $LIMIT $JAVA $JAVA_OPTS com.baidu.palo.PaloFe "$@" >$LOG_DIR/fe.out 2>&1 </dev/null &
 < 
 < echo $! > $pidfile
