@@ -25,7 +25,7 @@ export PALO_HOME=`cd "$curdir/.."; pwd`
 # JAVA_OPTS
 # LOG_DIR
 # PID_DIR
-export JAVA_OPTS="-Xmx1024m"
+#export JAVA_OPTS="-Xmx1024m"
 export LOG_DIR="$PALO_HOME/log"
 export PID_DIR=`cd "$curdir"; pwd`
 
