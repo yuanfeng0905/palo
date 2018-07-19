@@ -5,11 +5,11 @@ ARG version
 RUN mkdir /home/palo/run/ -p
 
 # copy jdk and palo binary
-COPY download/jdk1.8.0_171/ /home/palo/run/jdk1.8.0_171/
+COPY download/jdk1.8.0_181/ /home/palo/run/jdk1.8.0_181/
 COPY download/palo-$version/fe/ /home/palo/run/fe/
 
 # set java home
-ENV JAVA_HOME /home/palo/run/jdk1.8.0_171/
+ENV JAVA_HOME /home/palo/run/jdk1.8.0_181/
 
 # set fe port: http/thrift/mysql/bdbje
 EXPOSE 8030 9020 9030 9010
