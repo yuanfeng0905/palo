@@ -56,7 +56,6 @@ add_library(Util STATIC
   url_parser.cpp
   url_coding.cpp
   file_utils.cpp
-  mysql_dtoa.cpp
   mysql_row_buffer.cpp
   tuple_row_compare.cpp
   error_util.cc
@@ -70,7 +69,6 @@ add_library(Util STATIC
 #  coding_util.cpp
   cidr.cpp
   core_local.cpp
-  rpc_channel.cpp
 )
 
 #ADD_BE_TEST(integer-array-test)

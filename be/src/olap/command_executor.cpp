@@ -306,6 +306,7 @@ OLAPStatus CommandExecutor::create_table(const TCreateTabletReq& request) {
 
     // 7. clear environment
     if (res != OLAP_SUCCESS) {
+        PaloMetrics::create_tablet_requests_failed.increment(1);
         if (is_table_added) {
             OLAPStatus status = OLAPEngine::get_instance()->drop_table(
                     request.tablet_id, request.tablet_schema.schema_hash);
@@ -356,6 +357,7 @@ OLAPStatus CommandExecutor::report_all_tablets_info(
     res = OLAPEngine::get_instance()->report_all_tablets_info(tablets_info);
     if (res != OLAP_SUCCESS) {
         OLAP_LOG_WARNING("fail to process report all tablets info. [res=%d]", res);
+        PaloMetrics::report_all_tablets_requests_failed.increment(1);
         return res;
     }
 
@@ -375,6 +377,7 @@ OLAPStatus CommandExecutor::report_tablet_info(TTabletInfo* tablet_info) {
     res = OLAPEngine::get_instance()->report_tablet_info(tablet_info);
     if (res != OLAP_SUCCESS) {
         OLAP_LOG_WARNING("fail to get tablet info. [res=%d]", res);
+        PaloMetrics::report_tablet_requests_failed.increment(1);
         return res;
     }
 
@@ -394,9 +397,10 @@ OLAPStatus CommandExecutor::schema_change(const TAlterTabletReq& request) {
     res = handler.process_alter_table(ALTER_TABLET_SCHEMA_CHANGE, request);
 
     if (res != OLAP_SUCCESS) {
-        OLAP_LOG_WARNING("fail to submit schema_change. "
+        OLAP_LOG_WARNING("failed to do schema change. "
                          "[base_table=%ld new_table=%ld] [res=%d]",
                          request.base_tablet_id, request.new_tablet_req.tablet_id, res);
+        PaloMetrics::schema_change_requests_failed.increment(1);
         return res;
     }
 
@@ -419,9 +423,10 @@ OLAPStatus CommandExecutor::create_rollup_table(const TAlterTabletReq& request) 
     res = handler.process_alter_table(ALTER_TABLET_CREATE_ROLLUP_TABLE, request);
 
     if (res != OLAP_SUCCESS) {
-        OLAP_LOG_WARNING("failed to create rollup table. "
+        OLAP_LOG_WARNING("failed to do rollup. "
                          "[base_table=%ld new_table=%ld] [res=%d]",
                          request.base_tablet_id, request.new_tablet_req.tablet_id, res);
+        PaloMetrics::create_rollup_requests_failed.increment(1);
         return res;
     }
 
@@ -642,6 +647,7 @@ OLAPStatus CommandExecutor::delete_data(
         OLAP_LOG_WARNING("fail to push empty version for delete data. "
                          "[res=%d table='%s']",
                          res, table->full_name().c_str());
+        PaloMetrics::delete_requests_failed.increment(1);
         return res;
     }
 
@@ -696,18 +702,18 @@ OLAPStatus CommandExecutor::cancel_delete(const TCancelDeleteDataReq& request) {
     return res;
 }
 
-OLAPStatus CommandExecutor::get_all_root_path_stat(
-        std::vector<OLAPRootPathStat>* root_paths_stat) {
-    OLAP_LOG_INFO("begin to process get all root path stat.");
+OLAPStatus CommandExecutor::get_all_root_path_info(
+        std::vector<RootPathInfo>* root_paths_info) {
+    OLAP_LOG_INFO("begin to process get all root path info.");
     OLAPStatus res = OLAP_SUCCESS;
     
-    res = OLAPRootPath::get_instance()->get_all_root_path_stat(root_paths_stat);
+    res = OLAPRootPath::get_instance()->get_all_root_path_info(root_paths_info);
     if (res != OLAP_SUCCESS) {
-        OLAP_LOG_WARNING("fail to process get all root path stat. [res=%d]", res);
+        OLAP_LOG_WARNING("fail to process get all root path info. [res=%d]", res);
         return res;
     }
 
-    OLAP_LOG_INFO("success to process get all root path stat.");
+    OLAP_LOG_INFO("success to process get all root path info.");
     return res;
 }
 

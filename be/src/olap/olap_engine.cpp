@@ -38,6 +38,7 @@
 #include "olap/schema_change.h"
 #include "olap/utils.h"
 #include "olap/writer.h"
+#include "util/palo_metrics.h"
 
 using boost::filesystem::canonical;
 using boost::filesystem::directory_iterator;
@@ -260,13 +261,13 @@ OLAPStatus OLAPEngine::init() {
     }
 
     // 初始化CE调度器
-    vector<OLAPRootPathStat> all_root_paths_stat;
-    OLAPRootPath::get_instance()->get_all_disk_stat(&all_root_paths_stat);
-    _cumulative_compaction_disk_stat.reserve(all_root_paths_stat.size());
-    for (uint32_t i = 0; i < all_root_paths_stat.size(); i++) {
-        const OLAPRootPathStat& stat = all_root_paths_stat[i];
-        _cumulative_compaction_disk_stat.emplace_back(stat.root_path, i, stat.is_used);
-        _disk_id_map[stat.root_path] = i;
+    vector<RootPathInfo> all_root_paths_info;
+    OLAPRootPath::get_instance()->get_all_root_path_info(&all_root_paths_info);
+    _cumulative_compaction_disk_stat.reserve(all_root_paths_info.size());
+    for (uint32_t i = 0; i < all_root_paths_info.size(); i++) {
+        const RootPathInfo& info = all_root_paths_info[i];
+        _cumulative_compaction_disk_stat.emplace_back(info.path, i, info.is_used);
+        _disk_id_map[info.path] = i;
     }
     int32_t cumulative_compaction_num_threads = config::cumulative_compaction_num_threads;
     int32_t base_compaction_num_threads = config::base_compaction_num_threads;
@@ -982,10 +983,12 @@ TRY_START_BE_OK:
 
     if (do_base_compaction) {
         OLAP_LOG_NOTICE_PUSH("request", "START_BASE_COMPACTION");
+        PaloMetrics::base_compaction_request_total.increment(1);
         OLAPStatus cmd_res = base_compaction.run();
         if (cmd_res != OLAP_SUCCESS) {
             OLAP_LOG_WARNING("failed to do base compaction. [tablet='%s']",
                              tablet->full_name().c_str());
+            PaloMetrics::base_compaction_request_failed.increment(1);
         }
     }
 }
@@ -1044,11 +1047,11 @@ void OLAPEngine::start_cumulative_priority() {
 
     // determine whether to select candidate or not 
     bool is_select = false;
-    vector<OLAPRootPathStat> all_root_paths_stat;
-    OLAPRootPath::get_instance()->get_all_disk_stat(&all_root_paths_stat);
-    for (uint32_t i = 0; i < all_root_paths_stat.size(); i++) {
-        uint32_t disk_id = _disk_id_map[all_root_paths_stat[i].root_path];
-        _cumulative_compaction_disk_stat[disk_id].is_used = all_root_paths_stat[i].is_used;
+    vector<RootPathInfo> all_root_paths_info;
+    OLAPRootPath::get_instance()->get_all_root_path_info(&all_root_paths_info);
+    for (uint32_t i = 0; i < all_root_paths_info.size(); i++) {
+        uint32_t disk_id = _disk_id_map[all_root_paths_info[i].path];
+        _cumulative_compaction_disk_stat[disk_id].is_used = all_root_paths_info[i].is_used;
     }
 
     for (auto& disk : _cumulative_compaction_disk_stat) {
@@ -1095,9 +1098,11 @@ void OLAPEngine::start_cumulative_priority() {
                 _tablet_map_lock.unlock();
 
                 // start cumulative
+                PaloMetrics::cumulative_compaction_request_total.increment(1);
                 if (cumulative_compaction.run() != OLAP_SUCCESS) {
                     OLAP_LOG_WARNING("failed to do cumulative. [tablet='%s']",
                                      j->full_name().c_str());
+                    PaloMetrics::cumulative_compaction_request_failed.increment(1);
                 }
 
                 _fs_task_mutex.lock();
@@ -1126,8 +1131,8 @@ OLAPStatus OLAPEngine::start_trash_sweep(double* usage) {
     const uint32_t snapshot_expire = config::snapshot_expire_time_sec;
     const uint32_t trash_expire = config::trash_file_expire_time_sec;
     const double guard_space = config::disk_capacity_insufficient_percentage / 100.0;
-    std::vector<OLAPRootPathStat> disks_stat;
-    res = OLAPRootPath::get_instance()->get_all_disk_stat(&disks_stat);
+    std::vector<RootPathInfo> root_paths_info;
+    res = OLAPRootPath::get_instance()->get_all_root_path_info(&root_paths_info);
     if (res != OLAP_SUCCESS) {
         OLAP_LOG_WARNING("failed to get root path stat info when sweep trash.");
         return res;
@@ -1141,17 +1146,17 @@ OLAPStatus OLAPEngine::start_trash_sweep(double* usage) {
     }
     const time_t local_now = mktime(&local_tm_now); //得到当地日历时间
 
-    for (OLAPRootPathStat& stat : disks_stat) {
-        if (!stat.is_used) {
+    for (RootPathInfo& info : root_paths_info) {
+        if (!info.is_used) {
             continue;
         }
 
-        double curr_usage = (stat.disk_total_capacity - stat.disk_available_capacity)
-                / (double) stat.disk_total_capacity;
+        double curr_usage = info.data_used_capacity
+                / (double) info.capacity;
         *usage = *usage > curr_usage ? *usage : curr_usage;
 
         OLAPStatus curr_res = OLAP_SUCCESS;
-        string snapshot_path = stat.root_path + SNAPSHOT_PREFIX;
+        string snapshot_path = info.path + SNAPSHOT_PREFIX;
         curr_res = _do_sweep(snapshot_path, local_now, snapshot_expire);
         if (curr_res != OLAP_SUCCESS) {
             OLAP_LOG_WARNING("failed to sweep snapshot. [path=%s, err_code=%d]",
@@ -1159,7 +1164,7 @@ OLAPStatus OLAPEngine::start_trash_sweep(double* usage) {
             res = curr_res;
         }
 
-        string trash_path = stat.root_path + TRASH_PREFIX;
+        string trash_path = info.path + TRASH_PREFIX;
         curr_res = _do_sweep(trash_path, local_now,
                 curr_usage > guard_space ? 0 : trash_expire);
         if (curr_res != OLAP_SUCCESS) {
