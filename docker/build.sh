@@ -5,17 +5,18 @@ set -e
 TOP_DIR=$(pwd)/../
 from_source=$1
 ver=$2
+PALO_RELEASE_VER="palo-"$ver
+PALO_RELEASE_URL=""
+
 if [ $from_source = "" ] || [ $ver = "" ]; then
     echo "=== ERR: please attach from_source and version params";
     exit 1
 fi
 
 if [ $ver = "0.8.0" ]; then
-    PALO_RELEASE_VER="palo-"$ver
     PALO_RELEASE_URL="http://palo-opensource.gz.bcebos.com/palo-0.8.0-release-20180323.tar.gz?authorization=bce-auth-v1%2F069fc2786e464e63a5f1183824ddb522%2F2018-03-23T07%3A47%3A15Z%2F-1%2Fhost%2Fb3655151fa1f8b52100ea8a987f3de8743a1cdc84e50220482f7e46f6f5ec34c"
 fi
 if [ $ver = "0.8.1" ]; then
-    PALO_RELEASE_VER="palo-"$ver
     PALO_RELEASE_URL="http://palo-opensource.gz.bcebos.com/palo-0.8.1-release-20180418.tar.gz?authorization=bce-auth-v1%2F069fc2786e464e63a5f1183824ddb522%2F2018-04-18T05%3A11%3A34Z%2F-1%2Fhost%2F9dabe5cb37dd5fa253b41075f360c1c4389fa4965ccd59cb7e774d3c1b099f9f"
 fi
 
@@ -50,12 +51,19 @@ else
     echo "=== build from palo release binary file."
     mkdir -p download
     cd download
-    # 直接下载github上release binary file
-    if ! [ -f $PALO_RELEASE_VER.tar.gz ]; then
-        curl -fSL $PALO_RELEASE_URL -o $PALO_RELEASE_VER.tar.gz
-    fi
+
     mkdir -p $PALO_RELEASE_VER
-    tar zxvf $PALO_RELEASE_VER.tar.gz -C $PALO_RELEASE_VER --strip-components 1
+
+    # 如果没有指定下载版本，从本地编译目录copy到这里
+    if [ $PALO_RELEASE_URL = "" ]; then
+        cp -r $TOP_DIR/output/* $PALO_RELEASE_VER/
+    else
+        # 直接下载github上release binary file, 然后解压
+        if ! [ -f $PALO_RELEASE_VER.tar.gz ]; then
+            curl -fSL $PALO_RELEASE_URL -o $PALO_RELEASE_VER.tar.gz
+        fi
+        tar zxvf $PALO_RELEASE_VER.tar.gz -C $PALO_RELEASE_VER --strip-components 1
+    fi
 fi
 
 # 下载jdk1.8支持
