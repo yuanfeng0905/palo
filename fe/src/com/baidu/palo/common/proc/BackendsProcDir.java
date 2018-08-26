@@ -55,7 +55,7 @@ public class BackendsProcDir implements ProcDirInterface {
             .add("BackendId").add("Cluster").add("IP").add("HostName").add("HeartbeatPort")
             .add("BePort").add("HttpPort").add("brpcPort").add("LastStartTime").add("LastHeartbeat").add("Alive")
             .add("SystemDecommissioned").add("ClusterDecommissioned").add("TabletNum")
-            .add("DataUsedCapacity").add("TotalCapacity").add("FreeSpace")
+            .add("DataUsedCapacity").add("TotalCapacity").add("UsedSpace")
             .build();
 
     public static final int IP_INDEX = 2;
@@ -74,7 +74,7 @@ public class BackendsProcDir implements ProcDirInterface {
         BaseProcResult result = new BaseProcResult();
         result.setNames(TITLE_NAMES);
 
-        final List<List<String>> backendInfos = getBackendInfos();
+        final List<List<String>> backendInfos = getClusterBackendInfos(null);
         for (List<String> backendInfo : backendInfos) {
             List<String> oneInfo = new ArrayList<String>(backendInfo.size());
             for (String info : backendInfo) {
@@ -83,14 +83,6 @@ public class BackendsProcDir implements ProcDirInterface {
             result.addRow(oneInfo);
         }
         return result;
-    }
-
-    /**
-     * get all backends of system
-     * @return
-     */
-    public static List<List<String>> getBackendInfos() {
-        return getClusterBackendInfos(null);
     }
    
     /**
@@ -169,17 +161,17 @@ public class BackendsProcDir implements ProcDirInterface {
             Pair<Double, String> totalCapacity = DebugUtil.getByteUint(backend.getTotalCapacityB());
             backendInfo.add(DebugUtil.DECIMAL_FORMAT_SCALE_3.format(totalCapacity.first) + " " + totalCapacity.second);
 
-            // free space
-            double free = 0.0;
+            // used space
+            double used = 0.0;
             if (backend.getTotalCapacityB() <= 0) {
-                free = 0.0;
+                used = 0.0;
             } else {
-                free = (double) backend.getDataUsedCapacityB() * 100 / backend.getTotalCapacityB();
+                used = (double) backend.getDataUsedCapacityB() * 100 / backend.getTotalCapacityB();
             }
-            backendInfo.add(String.format("%.2f", free) + " %");
-
+            backendInfo.add(String.format("%.2f", used) + " %");
             comparableBackendInfos.add(backendInfo);
         }
+
         // backends proc node get result too slow, add log to observer.
         LOG.info("backends proc get tablet num cost: {}, total cost: {}",
                  watch.elapsed(TimeUnit.MILLISECONDS), (System.currentTimeMillis() - start));
@@ -226,3 +218,4 @@ public class BackendsProcDir implements ProcDirInterface {
     }
 
 }
+
