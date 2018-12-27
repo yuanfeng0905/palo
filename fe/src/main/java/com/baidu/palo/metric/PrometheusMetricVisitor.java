@@ -163,7 +163,7 @@ public class PrometheusMetricVisitor extends PaloMetricVisitor {
         StringBuilder sb = new StringBuilder();
         final String fullName = prefix + "_" + name.replaceAll("\\.", "_");
         sb.append(HELP).append(fullName).append(" ").append("\n");
-        sb.append(TYPE).append(fullName).append(" ").append("\n");
+        sb.append(TYPE).append(fullName).append(" ").append("histogram").append("\n");
         sb.append(fullName);
 
         Snapshot snapshot = histogram.getSnapshot();
