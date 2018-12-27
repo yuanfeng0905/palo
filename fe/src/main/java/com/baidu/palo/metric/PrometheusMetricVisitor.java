@@ -180,7 +180,7 @@ public class PrometheusMetricVisitor extends PaloMetricVisitor {
     public String getPaloNodeInfo() {
         final String PALO_NODE_INFO = "palo_node_info";
         StringBuilder sb = new StringBuilder();
-        sb.append(Joiner.on(" ").join(TYPE, PALO_NODE_INFO, "gauge", "\n"));
+        sb.append(Joiner.on(" ").join(TYPE, PALO_NODE_INFO, "gauge\n"));
         sb.append(PALO_NODE_INFO).append("{type=\"fe_node_num\", state=\"total\"} ")
                 .append(Catalog.getInstance().getFrontends(null).size()).append("\n");
         sb.append(PALO_NODE_INFO).append("{type=\"be_node_num\", state=\"total\"} ")
